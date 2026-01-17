@@ -1,7 +1,7 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const User = require("../models/User");
+const pool = require("../db");
 
 const router = express.Router();
 
@@ -10,19 +10,22 @@ router.post("/register", async (req, res) => {
   const { name, email, password } = req.body;
 
   try {
-    let user = await User.findOne({ email });
-    if (user) return res.status(400).json({ message: "Utilisateur existe déjà" });
+    const userCheck = await pool.query(
+      "SELECT * FROM users WHERE email = $1",
+      [email]
+    );
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    if (userCheck.rows.length > 0) {
+      return res.status(400).json({ message: "Utilisateur déjà existant" });
+    }
 
-    user = new User({
-      name,
-      email,
-      password: hashedPassword
-    });
+    const hashed = await bcrypt.hash(password, 10);
 
-    await user.save();
+    await pool.query(
+      "INSERT INTO users (name, email, password) VALUES ($1,$2,$3)",
+      [name, email, hashed]
+    );
+
     res.status(201).json({ message: "Compte créé avec succès" });
 
   } catch (err) {
@@ -35,14 +38,24 @@ router.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
   try {
-    const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ message: "Email ou mot de passe incorrect" });
+    const result = await pool.query(
+      "SELECT * FROM users WHERE email = $1",
+      [email]
+    );
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ message: "Email ou mot de passe incorrect" });
+    if (result.rows.length === 0) {
+      return res.status(400).json({ message: "Email ou mot de passe incorrect" });
+    }
+
+    const user = result.rows[0];
+    const match = await bcrypt.compare(password, user.password);
+
+    if (!match) {
+      return res.status(400).json({ message: "Email ou mot de passe incorrect" });
+    }
 
     const token = jwt.sign(
-      { id: user._id },
+      { id: user.id },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
@@ -50,7 +63,7 @@ router.post("/login", async (req, res) => {
     res.json({
       token,
       user: {
-        id: user._id,
+        id: user.id,
         name: user.name,
         email: user.email
       }
