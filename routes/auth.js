@@ -1,7 +1,7 @@
-const express = require("express");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-const pool = require("../db");
+import express from "express";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import db from "../db/database.js";
 
 const router = express.Router();
 
@@ -10,24 +10,21 @@ router.post("/register", async (req, res) => {
   const { name, email, password } = req.body;
 
   try {
-    const userCheck = await pool.query(
-      "SELECT * FROM users WHERE email = $1",
-      [email]
-    );
+    const existing = db.prepare(
+      "SELECT * FROM users WHERE email = ?"
+    ).get(email);
 
-    if (userCheck.rows.length > 0) {
+    if (existing) {
       return res.status(400).json({ message: "Utilisateur déjà existant" });
     }
 
-    const hashed = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    await pool.query(
-      "INSERT INTO users (name, email, password) VALUES ($1,$2,$3)",
-      [name, email, hashed]
-    );
+    db.prepare(
+      "INSERT INTO users (name, email, password) VALUES (?, ?, ?)"
+    ).run(name, email, hashedPassword);
 
     res.status(201).json({ message: "Compte créé avec succès" });
-
   } catch (err) {
     res.status(500).json({ message: "Erreur serveur" });
   }
@@ -38,19 +35,16 @@ router.post("/login", async (req, res) => {
   const { email, password } = req.body;
 
   try {
-    const result = await pool.query(
-      "SELECT * FROM users WHERE email = $1",
-      [email]
-    );
+    const user = db.prepare(
+      "SELECT * FROM users WHERE email = ?"
+    ).get(email);
 
-    if (result.rows.length === 0) {
+    if (!user) {
       return res.status(400).json({ message: "Email ou mot de passe incorrect" });
     }
 
-    const user = result.rows[0];
-    const match = await bcrypt.compare(password, user.password);
-
-    if (!match) {
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) {
       return res.status(400).json({ message: "Email ou mot de passe incorrect" });
     }
 
@@ -74,4 +68,4 @@ router.post("/login", async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;
