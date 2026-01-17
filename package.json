@@ -1,14 +1,13 @@
 {
   "name": "es-parfumerie-backend",
   "version": "1.0.0",
-  "description": "API ES Parfumerie - Authentification",
-  "main": "server.js",
   "type": "module",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": "18.x"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
