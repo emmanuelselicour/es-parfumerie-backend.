@@ -16,6 +16,15 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Middleware de logging
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} ${req.method} ${req.url}`);
+  if (req.method === 'POST' || req.method === 'PUT') {
+    console.log('Body:', req.body);
+  }
+  next();
+});
+
 // Configuration de la base de données
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -102,11 +111,44 @@ pool.connect((err, client, release) => {
         
         return Promise.all(insertPromises);
       }
+      console.log(`✅ ${count} produits trouvés dans la base de données`);
       return Promise.resolve();
     }).then(() => {
-      console.log(`✅ ${count || 3} produits disponibles`);
+      // Créer la table users si elle n'existe pas
+      return client.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          email VARCHAR(255) UNIQUE NOT NULL,
+          password_hash VARCHAR(255) NOT NULL,
+          first_name VARCHAR(100),
+          last_name VARCHAR(100),
+          role VARCHAR(50) DEFAULT 'user',
+          is_active BOOLEAN DEFAULT true,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+    }).then(() => {
+      console.log('✅ Table users vérifiée/créée');
+      
+      // Vérifier si l'utilisateur admin existe
+      return client.query("SELECT COUNT(*) FROM users WHERE email = 'admin@esparfumerie.com'");
+    }).then(result => {
+      const adminCount = parseInt(result.rows[0].count);
+      if (adminCount === 0) {
+        console.log('👤 Création du compte administrateur...');
+        // Hash du mot de passe "admin123"
+        const hashedPassword = bcrypt.hashSync('admin123', 10);
+        return client.query(
+          `INSERT INTO users (email, password_hash, first_name, last_name, role) 
+           VALUES ($1, $2, $3, $4, $5)`,
+          ['admin@esparfumerie.com', hashedPassword, 'Admin', 'System', 'admin']
+        );
+      }
+      console.log('✅ Compte admin trouvé');
+      return Promise.resolve();
     }).catch(err => {
-      console.error('❌ Erreur lors de la vérification des produits:', err);
+      console.error('❌ Erreur lors de l\'initialisation:', err);
     }).finally(() => {
       release();
     });
@@ -165,11 +207,20 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     status: 'online',
     endpoints: {
-      products: '/api/products',
+      products: {
+        getAll: 'GET /api/products',
+        getOne: 'GET /api/products/:id',
+        create: 'POST /api/products',
+        update: 'PUT /api/products/:id',
+        delete: 'DELETE /api/products/:id'
+      },
       auth: {
-        login: '/api/auth/login (POST)',
-        register: '/api/auth/register (POST)',
-        adminLogin: '/api/auth/admin/login (POST)'
+        login: 'POST /api/auth/login',
+        register: 'POST /api/auth/register',
+        adminLogin: 'POST /api/auth/admin/login'
+      },
+      dashboard: {
+        stats: 'GET /api/dashboard/stats'
       }
     },
     database: 'PostgreSQL',
@@ -278,26 +329,46 @@ app.get('/api/products/:id', async (req, res) => {
   }
 });
 
-// POST créer un nouveau produit (Admin uniquement)
-app.post('/api/products', authenticateToken, isAdmin, async (req, res) => {
+// POST créer un nouveau produit
+app.post('/api/products', async (req, res) => {
   try {
-    const { name, description, price, stock, category, image_url, features } = req.body;
+    const { name, description, price, stock, category, image_url, features, is_active } = req.body;
 
-    // Validation simple
-    if (!name || !description || !price || !category) {
+    // Validation
+    if (!name || !price || !category) {
       return res.status(400).json({
         success: false,
-        error: 'Nom, description, prix et catégorie sont requis'
+        error: 'Nom, prix et catégorie sont requis'
       });
     }
 
+    if (isNaN(price) || price <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Le prix doit être un nombre positif'
+      });
+    }
+
+    console.log('Ajout de produit:', { name, price, category });
+
     const result = await pool.query(
       `INSERT INTO products 
-       (name, description, price, stock, category, image_url, features) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7) 
+       (name, description, price, stock, category, image_url, features, is_active) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
        RETURNING *`,
-      [name, description, price, stock || 0, category, image_url || '', features || []]
+      [
+        name, 
+        description || '', 
+        parseFloat(price), 
+        stock ? parseInt(stock) : 0, 
+        category, 
+        image_url || '', 
+        features || [], 
+        is_active !== false
+      ]
     );
+
+    console.log('Produit ajouté avec succès:', result.rows[0]);
 
     res.status(201).json({
       success: true,
@@ -308,13 +379,13 @@ app.post('/api/products', authenticateToken, isAdmin, async (req, res) => {
     console.error('Erreur lors de la création du produit:', error);
     res.status(500).json({
       success: false,
-      error: 'Erreur serveur'
+      error: 'Erreur serveur: ' + error.message
     });
   }
 });
 
-// PUT mettre à jour un produit (Admin uniquement)
-app.put('/api/products/:id', authenticateToken, isAdmin, async (req, res) => {
+// PUT mettre à jour un produit
+app.put('/api/products/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
@@ -337,10 +408,23 @@ app.put('/api/products/:id', authenticateToken, isAdmin, async (req, res) => {
     const values = [];
     let paramCount = 1;
 
+    const allowedFields = ['name', 'description', 'price', 'stock', 'category', 'image_url', 'features', 'is_active'];
+    
     Object.keys(updates).forEach(key => {
-      if (['name', 'description', 'price', 'stock', 'category', 'image_url', 'features', 'is_active'].includes(key)) {
+      if (allowedFields.includes(key)) {
         fields.push(`${key} = $${paramCount}`);
-        values.push(updates[key]);
+        
+        // Convertir les types si nécessaire
+        if (key === 'price') {
+          values.push(parseFloat(updates[key]));
+        } else if (key === 'stock') {
+          values.push(parseInt(updates[key]));
+        } else if (key === 'is_active') {
+          values.push(updates[key] !== false);
+        } else {
+          values.push(updates[key]);
+        }
+        
         paramCount++;
       }
     });
@@ -352,13 +436,18 @@ app.put('/api/products/:id', authenticateToken, isAdmin, async (req, res) => {
       });
     }
 
+    // Ajouter updated_at
+    fields.push('updated_at = CURRENT_TIMESTAMP');
+
     values.push(id);
     const query = `
       UPDATE products 
-      SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP
+      SET ${fields.join(', ')} 
       WHERE id = $${paramCount} 
       RETURNING *
     `;
+
+    console.log('Mise à jour produit:', query, values);
 
     const result = await pool.query(query, values);
 
@@ -371,13 +460,13 @@ app.put('/api/products/:id', authenticateToken, isAdmin, async (req, res) => {
     console.error('Erreur lors de la mise à jour du produit:', error);
     res.status(500).json({
       success: false,
-      error: 'Erreur serveur'
+      error: 'Erreur serveur: ' + error.message
     });
   }
 });
 
-// DELETE supprimer un produit (Admin uniquement)
-app.delete('/api/products/:id', authenticateToken, isAdmin, async (req, res) => {
+// DELETE supprimer un produit (soft delete)
+app.delete('/api/products/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -396,9 +485,11 @@ app.delete('/api/products/:id', authenticateToken, isAdmin, async (req, res) => 
 
     // Soft delete (désactiver le produit)
     await pool.query(
-      'UPDATE products SET is_active = false WHERE id = $1',
+      'UPDATE products SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
       [id]
     );
+
+    console.log(`Produit ${id} désactivé`);
 
     res.json({
       success: true,
@@ -408,7 +499,7 @@ app.delete('/api/products/:id', authenticateToken, isAdmin, async (req, res) => 
     console.error('Erreur lors de la suppression du produit:', error);
     res.status(500).json({
       success: false,
-      error: 'Erreur serveur'
+      error: 'Erreur serveur: ' + error.message
     });
   }
 });
@@ -427,42 +518,37 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    // Pour le moment, simulation simple
-    // En production, vérifier dans la base de données
-    
-    if (email === 'admin@esparfumerie.com' && password === 'admin123') {
-      // Créer un token JWT pour l'admin
-      const token = jwt.sign(
-        { 
-          id: 1, 
-          email: email, 
-          role: 'admin',
-          name: 'Administrateur' 
-        },
-        process.env.JWT_SECRET || 'votre-secret-par-defaut',
-        { expiresIn: '7d' }
-      );
+    // Chercher l'utilisateur dans la base
+    const result = await pool.query(
+      'SELECT * FROM users WHERE email = $1 AND is_active = true',
+      [email]
+    );
 
-      return res.json({
-        success: true,
-        message: 'Connexion réussie',
-        token: token,
-        user: {
-          id: 1,
-          email: email,
-          name: 'Administrateur',
-          role: 'admin'
-        }
+    if (result.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        error: 'Identifiants incorrects'
       });
     }
 
-    // Pour les utilisateurs normaux, simulation
+    const user = result.rows[0];
+
+    // Vérifier le mot de passe
+    const validPassword = await bcrypt.compare(password, user.password_hash);
+    if (!validPassword) {
+      return res.status(401).json({
+        success: false,
+        error: 'Identifiants incorrects'
+      });
+    }
+
+    // Créer un token JWT
     const token = jwt.sign(
       { 
-        id: 2, 
-        email: email, 
-        role: 'user',
-        name: email.split('@')[0] 
+        id: user.id, 
+        email: user.email, 
+        role: user.role,
+        name: `${user.first_name} ${user.last_name}`.trim() || user.email.split('@')[0]
       },
       process.env.JWT_SECRET || 'votre-secret-par-defaut',
       { expiresIn: '7d' }
@@ -473,10 +559,12 @@ app.post('/api/auth/login', async (req, res) => {
       message: 'Connexion réussie',
       token: token,
       user: {
-        id: 2,
-        email: email,
-        name: email.split('@')[0],
-        role: 'user'
+        id: user.id,
+        email: user.email,
+        name: `${user.first_name} ${user.last_name}`.trim() || user.email.split('@')[0],
+        firstName: user.first_name,
+        lastName: user.last_name,
+        role: user.role
       }
     });
 
@@ -501,18 +589,46 @@ app.post('/api/auth/register', async (req, res) => {
       });
     }
 
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Le mot de passe doit contenir au moins 6 caractères'
+      });
+    }
+
+    // Vérifier si l'email existe déjà
+    const existingUser = await pool.query(
+      'SELECT * FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (existingUser.rows.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Cet email est déjà utilisé'
+      });
+    }
+
     // Hasher le mot de passe
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // En production, insérer dans la base de données
-    // Pour le moment, simulation
-    
+    // Insérer le nouvel utilisateur
+    const result = await pool.query(
+      `INSERT INTO users (email, password_hash, first_name, last_name, role) 
+       VALUES ($1, $2, $3, $4, $5) 
+       RETURNING id, email, first_name, last_name, role, created_at`,
+      [email, hashedPassword, firstName || '', lastName || '', 'user']
+    );
+
+    const newUser = result.rows[0];
+
+    // Créer un token JWT
     const token = jwt.sign(
       { 
-        id: Date.now(), 
-        email: email, 
-        role: 'user',
-        name: firstName || email.split('@')[0] 
+        id: newUser.id, 
+        email: newUser.email, 
+        role: newUser.role,
+        name: `${newUser.first_name} ${newUser.last_name}`.trim() || newUser.email.split('@')[0]
       },
       process.env.JWT_SECRET || 'votre-secret-par-defaut',
       { expiresIn: '7d' }
@@ -523,12 +639,12 @@ app.post('/api/auth/register', async (req, res) => {
       message: 'Compte créé avec succès',
       token: token,
       user: {
-        id: Date.now(),
-        email: email,
-        name: firstName || email.split('@')[0],
-        firstName: firstName,
-        lastName: lastName,
-        role: 'user'
+        id: newUser.id,
+        email: newUser.email,
+        name: `${newUser.first_name} ${newUser.last_name}`.trim() || newUser.email.split('@')[0],
+        firstName: newUser.first_name,
+        lastName: newUser.last_name,
+        role: newUser.role
       }
     });
 
@@ -536,17 +652,19 @@ app.post('/api/auth/register', async (req, res) => {
     console.error('Erreur lors de l\'inscription:', error);
     res.status(500).json({
       success: false,
-      error: 'Erreur serveur'
+      error: 'Erreur serveur: ' + error.message
     });
   }
 });
 
-// POST Connexion admin (spécial)
+// POST Connexion admin (spécial - plus permissif)
 app.post('/api/auth/admin/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Vérification des identifiants admin
+    console.log('Tentative de connexion admin:', email);
+
+    // Vérification simple pour le développement
     if (email === 'admin@esparfumerie.com' && password === 'admin123') {
       // Créer un token JWT pour l'admin
       const token = jwt.sign(
@@ -558,7 +676,7 @@ app.post('/api/auth/admin/login', async (req, res) => {
           isAdmin: true
         },
         process.env.JWT_SECRET || 'votre-secret-par-defaut',
-        { expiresIn: '24h' } // Token plus court pour l'admin
+        { expiresIn: '24h' }
       );
 
       return res.json({
@@ -575,16 +693,61 @@ app.post('/api/auth/admin/login', async (req, res) => {
       });
     }
 
-    res.status(401).json({
-      success: false,
-      error: 'Identifiants admin incorrects'
+    // Sinon, essayer avec la base de données
+    const result = await pool.query(
+      'SELECT * FROM users WHERE email = $1 AND role = $2',
+      [email, 'admin']
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        error: 'Identifiants admin incorrects'
+      });
+    }
+
+    const adminUser = result.rows[0];
+
+    // Vérifier le mot de passe
+    const validPassword = await bcrypt.compare(password, adminUser.password_hash);
+    if (!validPassword) {
+      return res.status(401).json({
+        success: false,
+        error: 'Identifiants admin incorrects'
+      });
+    }
+
+    // Créer un token JWT
+    const token = jwt.sign(
+      { 
+        id: adminUser.id, 
+        email: adminUser.email, 
+        role: adminUser.role,
+        name: `${adminUser.first_name} ${adminUser.last_name}`.trim() || 'Administrateur',
+        isAdmin: true
+      },
+      process.env.JWT_SECRET || 'votre-secret-par-defaut',
+      { expiresIn: '24h' }
+    );
+
+    res.json({
+      success: true,
+      message: 'Connexion admin réussie',
+      token: token,
+      user: {
+        id: adminUser.id,
+        email: adminUser.email,
+        name: `${adminUser.first_name} ${adminUser.last_name}`.trim() || 'Administrateur',
+        role: adminUser.role,
+        permissions: ['all']
+      }
     });
 
   } catch (error) {
     console.error('Erreur lors de la connexion admin:', error);
     res.status(500).json({
       success: false,
-      error: 'Erreur serveur'
+      error: 'Erreur serveur: ' + error.message
     });
   }
 });
@@ -592,23 +755,11 @@ app.post('/api/auth/admin/login', async (req, res) => {
 // ==================== ROUTES DASHBOARD ====================
 
 // GET Statistiques du dashboard
-app.get('/api/dashboard/stats', authenticateToken, isAdmin, async (req, res) => {
+app.get('/api/dashboard/stats', async (req, res) => {
   try {
     // Compter les produits
-    const productsResult = await pool.query('SELECT COUNT(*) FROM products');
+    const productsResult = await pool.query('SELECT COUNT(*) FROM products WHERE is_active = true');
     const totalProducts = parseInt(productsResult.rows[0].count);
-
-    // Compter les produits actifs
-    const activeProductsResult = await pool.query('SELECT COUNT(*) FROM products WHERE is_active = true');
-    const activeProducts = parseInt(activeProductsResult.rows[0].count);
-
-    // Calculer la valeur du stock
-    const stockValueResult = await pool.query(`
-      SELECT SUM(price * stock) as total_value 
-      FROM products 
-      WHERE is_active = true
-    `);
-    const stockValue = parseFloat(stockValueResult.rows[0].total_value) || 0;
 
     // Produits bas stock (moins de 10 unités)
     const lowStockResult = await pool.query(`
@@ -626,20 +777,40 @@ app.get('/api/dashboard/stats', authenticateToken, isAdmin, async (req, res) => 
     `);
     const outOfStockProducts = parseInt(outOfStockResult.rows[0].count);
 
+    // Calculer la valeur du stock
+    const stockValueResult = await pool.query(`
+      SELECT SUM(price * stock) as total_value 
+      FROM products 
+      WHERE is_active = true
+    `);
+    const stockValue = parseFloat(stockValueResult.rows[0].total_value) || 0;
+
+    // Compter les utilisateurs
+    const usersResult = await pool.query('SELECT COUNT(*) FROM users WHERE is_active = true');
+    const totalUsers = parseInt(usersResult.rows[0].count);
+
+    // Statistiques par catégorie
+    const categoriesResult = await pool.query(`
+      SELECT category, COUNT(*) as count
+      FROM products 
+      WHERE is_active = true 
+      GROUP BY category
+    `);
+
+    const categories = {};
+    categoriesResult.rows.forEach(row => {
+      categories[row.category] = parseInt(row.count);
+    });
+
     res.json({
       success: true,
       stats: {
         totalProducts,
-        activeProducts,
-        inactiveProducts: totalProducts - activeProducts,
-        stockValue: Math.round(stockValue * 100) / 100,
         lowStockProducts,
         outOfStockProducts,
-        categories: {
-          men: await countProductsByCategory('men'),
-          women: await countProductsByCategory('women'),
-          unisex: await countProductsByCategory('unisex')
-        }
+        stockValue: Math.round(stockValue * 100) / 100,
+        totalUsers,
+        categories
       }
     });
   } catch (error) {
@@ -651,13 +822,50 @@ app.get('/api/dashboard/stats', authenticateToken, isAdmin, async (req, res) => 
   }
 });
 
-async function countProductsByCategory(category) {
-  const result = await pool.query(
-    'SELECT COUNT(*) FROM products WHERE category = $1 AND is_active = true',
-    [category]
-  );
-  return parseInt(result.rows[0].count);
-}
+// GET Produits récents
+app.get('/api/dashboard/recent-products', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT * FROM products 
+      WHERE is_active = true 
+      ORDER BY created_at DESC 
+      LIMIT 5
+    `);
+
+    res.json({
+      success: true,
+      products: result.rows
+    });
+  } catch (error) {
+    console.error('Erreur lors du chargement des produits récents:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur serveur'
+    });
+  }
+});
+
+// ==================== ROUTES UTILISATEURS ====================
+
+// GET Tous les utilisateurs (admin seulement)
+app.get('/api/users', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, email, first_name, last_name, role, created_at FROM users WHERE is_active = true ORDER BY created_at DESC'
+    );
+
+    res.json({
+      success: true,
+      users: result.rows
+    });
+  } catch (error) {
+    console.error('Erreur lors de la récupération des utilisateurs:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur serveur'
+    });
+  }
+});
 
 // ==================== GESTION DES ERREURS ====================
 
@@ -670,9 +878,9 @@ app.use('*', (req, res) => {
       products: {
         getAll: 'GET /api/products',
         getOne: 'GET /api/products/:id',
-        create: 'POST /api/products (admin)',
-        update: 'PUT /api/products/:id (admin)',
-        delete: 'DELETE /api/products/:id (admin)'
+        create: 'POST /api/products',
+        update: 'PUT /api/products/:id',
+        delete: 'DELETE /api/products/:id'
       },
       auth: {
         login: 'POST /api/auth/login',
@@ -680,7 +888,11 @@ app.use('*', (req, res) => {
         adminLogin: 'POST /api/auth/admin/login'
       },
       dashboard: {
-        stats: 'GET /api/dashboard/stats (admin)'
+        stats: 'GET /api/dashboard/stats',
+        recentProducts: 'GET /api/dashboard/recent-products'
+      },
+      users: {
+        getAll: 'GET /api/users (admin)'
       }
     }
   });
@@ -706,6 +918,8 @@ app.listen(PORT, () => {
   console.log(`🔗 URL: http://localhost:${PORT}`);
   console.log(`🌍 Frontend: ${process.env.FRONTEND_URL || 'https://es-parfumerie.netlify.app'}`);
   console.log(`🗄️  Base de données: PostgreSQL (Render)`);
-  console.log(`👤 Compte admin: admin@esparfumerie.com / admin123`);
+  console.log(`🔑 Compte admin: admin@esparfumerie.com / admin123`);
+  console.log('========================================');
+  console.log('✅ API prête à recevoir des requêtes');
   console.log('========================================');
 });
