@@ -1,4 +1,4 @@
-// src/server.js - FICHIER CORRIGÉ
+// src/server.js - FICHIER FINAL
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -28,7 +28,7 @@ app.use(cors({
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limite chaque IP à 100 requêtes par fenêtre
+  max: 100,
   message: 'Trop de requêtes depuis cette IP, veuillez réessayer plus tard.'
 });
 app.use('/api/', limiter);
@@ -38,7 +38,20 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Routes de base
+// Route de base
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'Bienvenue sur l\'API ES Parfumerie',
+    version: '1.0.0',
+    endpoints: {
+      auth: '/api/auth',
+      products: '/api/products',
+      admin: '/api/admin'
+    }
+  });
+});
+
+// Route de santé
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
@@ -48,7 +61,7 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Route d'urgence pour créer un admin - DOIT ÊTRE ICI, APRÈS LA DÉCLARATION DE APP
+// Route d'urgence pour créer un admin
 app.post('/api/emergency-admin', async (req, res) => {
   try {
     console.log('🚨 Route d\'urgence admin appelée');
@@ -68,6 +81,7 @@ app.post('/api/emergency-admin', async (req, res) => {
     // Vérifier si la table existe
     try {
       await pool.query('SELECT 1 FROM users LIMIT 1');
+      console.log('✅ Table users existe');
     } catch (error) {
       console.log('📊 Table users n\'existe pas, création...');
       // Créer la table
@@ -91,6 +105,7 @@ app.post('/api/emergency-admin', async (req, res) => {
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
+      console.log('✅ Table users créée');
     }
     
     // Créer ou mettre à jour l'admin
@@ -106,6 +121,8 @@ app.post('/api/emergency-admin', async (req, res) => {
     );
     
     await pool.end();
+    
+    console.log('🎉 Admin créé avec succès');
     
     res.json({
       success: true,
@@ -143,7 +160,7 @@ app.use('/api/*', (req, res) => {
 
 // Gestion des erreurs
 app.use((err, req, res, next) => {
-  console.error('❌ Erreur serveur:', err.stack);
+  console.error('❌ Erreur serveur:', err.message);
   
   const statusCode = err.statusCode || 500;
   const message = err.message || 'Erreur serveur interne';
@@ -161,16 +178,20 @@ app.listen(PORT, () => {
 ╔══════════════════════════════════════════════════════════╗
 ║                🚀 ES PARFUMERIE BACKEND                 ║
 ╠══════════════════════════════════════════════════════════╣
-║ Port: ${PORT}                                             ║
-║ Environnement: ${process.env.NODE_ENV || 'development'}   ║
-║ Frontend: ${process.env.FRONTEND_URL || 'Non défini'}     ║
-║ Database: ${process.env.DATABASE_URL ? 'Connecté' : 'Non configuré'} ║
+║ 📍 Port: ${PORT}                                           ║
+║ 🌍 Environnement: ${process.env.NODE_ENV || 'development'} ║
+║ 🔗 Frontend: ${process.env.FRONTEND_URL || 'Non défini'}   ║
+║ 🗄️  Database: ${process.env.DATABASE_URL ? 'Connecté' : 'Non configuré'} ║
 ╠══════════════════════════════════════════════════════════╣
-║ 📍 Routes disponibles:                                   ║
-║   • GET  /api/health           → Vérifier l'état de l'API║
-║   • POST /api/emergency-admin  → Créer admin d'urgence   ║
-║   • POST /api/auth/login       → Connexion               ║
-║   • POST /api/auth/create-admin→ Créer admin             ║
+║ 📍 URLs importantes:                                     ║
+║   • API: https://es-parfumerie-backend.onrender.com      ║
+║   • Admin: https://es-parfumerie.netlify.app/admin.html  ║
+║   • Site: https://es-parfumerie.netlify.app              ║
+╠══════════════════════════════════════════════════════════╣
+║ 🔧 Routes d'urgence:                                     ║
+║   • GET  /api/health          → Vérifier l'API           ║
+║   • POST /api/emergency-admin → Créer admin              ║
+║   • POST /api/auth/login      → Connexion                ║
 ╚══════════════════════════════════════════════════════════╝
   `);
 });
