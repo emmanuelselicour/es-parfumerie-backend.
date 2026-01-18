@@ -46,4 +46,18 @@ app.post('/api/products', async (req, res) => {
     const { name, description, price, stock, category, image } = req.body;
     
     const result = await pool.query(
-      'INSERT INTO products (name, description, price, stock, category, image) VALUES ($1, $2, $3, $4, $5,
+      'INSERT INTO products (name, description, price, stock, category, image) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [name, description, price, stock, category, image]
+    );
+    
+    res.status(201).json({ product: result.rows[0] });
+  } catch (error) {
+    console.error('Error adding product:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Démarrer le serveur
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
