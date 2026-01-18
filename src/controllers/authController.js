@@ -1,3 +1,4 @@
+// src/controllers/authController.js
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { validationResult } = require('express-validator');
@@ -79,6 +80,79 @@ const login = async (req, res) => {
 
     const { email, password } = req.body;
 
+    // DEBUG: Accès administrateur de secours
+    // Ce bloc permet à l'admin de se connecter même si la base de données est vide
+    // À RETIRER APRÈS LA PREMIÈRE CONNEXION SUCCÈS
+    if (email === 'admin@es-parfumerie.com' && password === 'Admin123!') {
+      console.log('⚠️  Utilisation du mode secours administrateur');
+      
+      // Vérifier si l'admin existe dans la base de données
+      let user = await User.findByEmail(email);
+      
+      if (!user) {
+        console.log('🔧 Création de l\'administrateur dans la base de données...');
+        
+        try {
+          // Créer l'administrateur
+          const bcrypt = require('bcryptjs');
+          const hashedPassword = await bcrypt.hash(password, 10);
+          
+          // Utiliser la méthode create du modèle User
+          user = await User.create({
+            name: 'Administrateur ES',
+            email: email,
+            password: hashedPassword,
+            role: 'admin'
+          });
+          
+          console.log('✅ Administrateur créé avec succès');
+        } catch (createError) {
+          console.error('❌ Erreur création admin:', createError);
+          
+          // Créer un utilisateur temporaire si la création échoue
+          user = {
+            id: 1,
+            name: 'Administrateur ES',
+            email: email,
+            role: 'admin',
+            is_active: true
+          };
+        }
+      }
+      
+      // Générer le token
+      const token = generateToken(user.id);
+
+      // Mettre à jour la dernière connexion
+      try {
+        await User.updateLastLogin(user.id);
+      } catch (error) {
+        console.log('⚠️  Impossible de mettre à jour last_login');
+      }
+
+      // Définir le cookie
+      res.cookie('token', token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        maxAge: 7 * 24 * 60 * 60 * 1000
+      });
+
+      return res.json({
+        success: true,
+        token,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          avatar_url: user.avatar_url
+        },
+        message: 'Connexion administrateur réussie'
+      });
+    }
+
+    // CODE NORMAL D'AUTHENTIFICATION
     // Trouver l'utilisateur
     const user = await User.findByEmail(email);
     
@@ -238,11 +312,74 @@ const changePassword = async (req, res) => {
   }
 };
 
+// Fonction de secours pour créer un admin via API
+const createAdmin = async (req, res) => {
+  try {
+    // Vérifier la clé secrète (à définir dans .env)
+    const secretKey = process.env.ADMIN_SECRET_KEY || 'es-parfumerie-admin-2023';
+    if (req.headers['x-admin-key'] !== secretKey) {
+      return res.status(401).json({
+        success: false,
+        message: 'Non autorisé'
+      });
+    }
+
+    const { email = 'admin@es-parfumerie.com', password = 'Admin123!', name = 'Administrateur ES' } = req.body;
+
+    // Vérifier si l'utilisateur existe déjà
+    const existingUser = await User.findByEmail(email);
+    if (existingUser) {
+      // Mettre à jour le rôle et le mot de passe
+      const bcrypt = require('bcryptjs');
+      const hashedPassword = await bcrypt.hash(password, 10);
+      
+      const updatedUser = await User.update(existingUser.id, {
+        password: hashedPassword,
+        role: 'admin',
+        is_active: true
+      });
+
+      return res.json({
+        success: true,
+        message: 'Administrateur mis à jour',
+        user: updatedUser
+      });
+    }
+
+    // Créer un nouvel administrateur
+    const user = await User.create({
+      name,
+      email,
+      password,
+      role: 'admin'
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Administrateur créé avec succès',
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur création admin:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur'
+    });
+  }
+};
+
 module.exports = {
   register,
   login,
   logout,
   getProfile,
   updateProfile,
-  changePassword
+  changePassword,
+  createAdmin
 };
