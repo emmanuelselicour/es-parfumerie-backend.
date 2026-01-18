@@ -19,4 +19,5 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
   console.log("API ES Parfumerie lancée sur le port " + PORT)
 );
-app.use("/api/admin", require("./routes/admin.js"));
+import adminRoutes from "./routes/admin.js";
+app.use("/api/admin", adminRoutes);
