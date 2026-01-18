@@ -1,4 +1,48 @@
-// Route temporaire pour créer un admin
+const express = require('express');
+const router = express.Router();
+const { auth } = require('../middleware/auth');
+const admin = require('../middleware/admin');
+const {
+  getDashboardStats,
+  getUsers,
+  updateUser,
+  deleteUser,
+  getProducts,
+  createProduct,
+  updateProduct,
+  deleteProduct,
+  getOrders,
+  updateOrderStatus,
+  getCategories,
+  createCategory
+} = require('../controllers/adminController');
+
+// Toutes les routes admin nécessitent l'authentification et les droits admin
+router.use(auth, admin);
+
+// Dashboard
+router.get('/dashboard/stats', getDashboardStats);
+
+// Utilisateurs
+router.get('/users', getUsers);
+router.put('/users/:id', updateUser);
+router.delete('/users/:id', deleteUser);
+
+// Produits
+router.get('/products', getProducts);
+router.post('/products', createProduct);
+router.put('/products/:id', updateProduct);
+router.delete('/products/:id', deleteProduct);
+
+// Commandes
+router.get('/orders', getOrders);
+router.put('/orders/:id/status', updateOrderStatus);
+
+// Catégories
+router.get('/categories', getCategories);
+router.post('/categories', createCategory);
+
+// Route temporaire pour créer un admin (à retirer après utilisation)
 router.post('/create-admin', async (req, res) => {
   try {
     const { email, password, name } = req.body;
@@ -14,6 +58,7 @@ router.post('/create-admin', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     
     // Insérer dans la base de données
+    const { query } = require('../config/database');
     const result = await query(
       `INSERT INTO users (name, email, password, role, email_verified) 
        VALUES ($1, $2, $3, $4, $5) 
@@ -34,3 +79,5 @@ router.post('/create-admin', async (req, res) => {
     res.status(500).json({ success: false, message: 'Erreur serveur' });
   }
 });
+
+module.exports = router;
