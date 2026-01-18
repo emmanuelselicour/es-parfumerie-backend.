@@ -78,4 +78,6 @@ app.listen(PORT, () => {
   console.log(`🚀 Serveur démarré sur le port ${PORT}`);
   console.log(`🌍 Environnement: ${process.env.NODE_ENV}`);
   console.log(`🔗 Frontend URL: ${process.env.FRONTEND_URL}`);
+  console.log(`🔗 Backend URL: ${process.env.BACKEND_URL}`);
+  console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
 });
