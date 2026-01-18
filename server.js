@@ -1,1078 +1,850 @@
-// ES Parfumerie - Application JavaScript
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { Pool } = require('pg');
 
-// Configuration de l'API
-const API_BASE_URL = 'https://es-parfumerie-backend.onrender.com';
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-// État global de l'application
-const AppState = {
-    currentUser: null,
-    products: [],
-    cart: [],
-    language: 'fr',
-    darkMode: false,
-    currentSection: 'home',
-    isLoading: false
+// Middleware
+app.use(cors({
+  origin: process.env.FRONTEND_URL || '*',
+  credentials: true
+}));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Configuration de la base de données
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { 
+    rejectUnauthorized: false 
+  } : false,
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
+});
+
+// Test de connexion à la base de données
+pool.connect((err, client, release) => {
+  if (err) {
+    console.error('❌ Erreur de connexion à la base de données:', err.message);
+  } else {
+    console.log('✅ Connecté à la base de données PostgreSQL');
+    
+    // Créer les tables si elles n'existent pas
+    createTables(client)
+      .then(() => {
+        console.log('✅ Tables vérifiées/créées');
+        return checkAndInsertAdminUser(client);
+      })
+      .then(() => {
+        console.log('✅ Compte admin vérifié');
+        return checkAndInsertDemoProducts(client);
+      })
+      .then(() => {
+        console.log('✅ Produits de démonstration vérifiés');
+      })
+      .catch(error => {
+        console.error('❌ Erreur lors de l\'initialisation:', error);
+      })
+      .finally(() => {
+        release();
+      });
+  }
+});
+
+async function createTables(client) {
+  // Table users
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      email VARCHAR(255) UNIQUE NOT NULL,
+      password_hash VARCHAR(255) NOT NULL,
+      first_name VARCHAR(100),
+      last_name VARCHAR(100),
+      phone VARCHAR(20),
+      address TEXT,
+      city VARCHAR(100),
+      postal_code VARCHAR(20),
+      country VARCHAR(100),
+      role VARCHAR(50) DEFAULT 'user',
+      is_active BOOLEAN DEFAULT true,
+      preferences JSONB DEFAULT '{}',
+      last_login TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Table products
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS products (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      description TEXT,
+      price DECIMAL(10, 2) NOT NULL,
+      stock INTEGER DEFAULT 0,
+      category VARCHAR(50),
+      image_url TEXT,
+      features TEXT[] DEFAULT '{}',
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+}
+
+async function checkAndInsertAdminUser(client) {
+  // Vérifier si un admin existe
+  const adminCheck = await client.query(
+    "SELECT id FROM users WHERE email = 'admin@esparfumerie.com'"
+  );
+
+  if (adminCheck.rows.length === 0) {
+    // Hasher le mot de passe admin123
+    const hashedPassword = await bcrypt.hash('admin123', 10);
+    
+    await client.query(
+      `INSERT INTO users (email, password_hash, first_name, last_name, role) 
+       VALUES ($1, $2, $3, $4, $5)`,
+      ['admin@esparfumerie.com', hashedPassword, 'Admin', 'System', 'admin']
+    );
+    console.log('👤 Compte admin créé: admin@esparfumerie.com / admin123');
+  }
+}
+
+async function checkAndInsertDemoProducts(client) {
+  const productCheck = await client.query('SELECT COUNT(*) FROM products');
+  const count = parseInt(productCheck.rows[0].count);
+
+  if (count === 0) {
+    const demoProducts = [
+      {
+        name: 'Parfum Élégance',
+        description: 'Un parfum élégant et raffiné pour les occasions spéciales',
+        price: 89.99,
+        stock: 50,
+        category: 'unisex',
+        image_url: 'https://images.unsplash.com/photo-1541643600914-78b084683601?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80',
+        features: ['Notes florales', 'Longue tenue', 'Bouteille en verre recyclé']
+      },
+      {
+        name: 'Essence de Nuit',
+        description: 'Un parfum mystérieux et envoûtant pour la soirée',
+        price: 75.50,
+        stock: 30,
+        category: 'men',
+        image_url: 'https://images.unsplash.com/photo-1590736969956-6d9c2a8d6977?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80',
+        features: ['Notes boisées', 'Tenue moyenne', 'Édition limitée']
+      },
+      {
+        name: 'Fleur de Printemps',
+        description: 'Un parfum frais et floral pour le quotidien',
+        price: 65.00,
+        stock: 100,
+        category: 'women',
+        image_url: 'https://images.unsplash.com/photo-1549465220-1a8b9238cd48?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80',
+        features: ['Notes fruitées', 'Tenue légère', 'Ingrédients naturels']
+      }
+    ];
+
+    for (const product of demoProducts) {
+      await client.query(
+        `INSERT INTO products (name, description, price, stock, category, image_url, features) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7) 
+         ON CONFLICT DO NOTHING`,
+        [product.name, product.description, product.price, product.stock, 
+         product.category, product.image_url, product.features]
+      );
+    }
+    console.log('🎁 3 produits de démonstration insérés');
+  }
+}
+
+// Middleware d'authentification
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    req.user = null;
+    return next();
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET || 'votre-secret-par-defaut', (err, user) => {
+    if (err) {
+      return res.status(403).json({
+        success: false,
+        error: 'Token invalide ou expiré'
+      });
+    }
+    req.user = user;
+    next();
+  });
 };
 
-// Dictionnaires de traduction
-const translations = {
-    fr: {
-        // Navigation
-        'nav.home': 'Accueil',
-        'nav.about': 'À propos',
-        'nav.products': 'Produits',
-        'nav.contact': 'Contact',
-        'nav.profile': 'Profil',
-        'nav.cart': 'Panier',
-        'nav.login': 'Connexion',
-        'nav.signup': 'Inscription',
-        
-        // Hero
-        'hero.title': 'L\'art de la fragrance',
-        'hero.subtitle': 'Découvrez notre collection exclusive de parfums pour homme et femme. Des senteurs uniques qui racontent votre histoire.',
-        'hero.shop': 'Découvrir la collection',
-        'hero.learn': 'En savoir plus',
-        
-        // About
-        'about.title': 'À propos de ES Parfumerie',
-        'about.text1': 'Depuis 2010, ES Parfumerie offre une sélection rigoureuse des plus belles fragrances du monde. Notre passion pour les parfums nous pousse à rechercher constamment l\'excellence et l\'authenticité.',
-        'about.text2': 'Nous collaborons avec les meilleurs nez et maisons de parfum pour vous proposer des senteurs uniques, alliant tradition et innovation.',
-        'about.feature1.title': 'Qualité Premium',
-        'about.feature1.text': 'Sélection des meilleurs ingrédients',
-        'about.feature2.title': 'Ingrédients Naturels',
-        'about.feature2.text': 'Formules respectueuses de l\'environnement',
-        'about.feature3.title': 'Livraison Rapide',
-        'about.feature3.text': 'Expédition sous 48h en France',
-        
-        // Products
-        'products.title': 'Nos Parfums',
-        'products.subtitle': 'Découvrez notre collection exclusive',
-        'products.all': 'Tous',
-        'products.men': 'Homme',
-        'products.women': 'Femme',
-        'products.unisex': 'Unisex',
-        'products.empty': 'Aucun produit disponible',
-        'products.emptyDesc': 'Notre collection sera bientôt disponible. Revenez plus tard !',
-        'products.add': 'Ajouter un produit',
-        'products.addToCart': 'Ajouter au panier',
-        'products.viewDetails': 'Voir détails',
-        'products.outOfStock': 'Rupture de stock',
-        
-        // Contact
-        'contact.title': 'Contactez-nous',
-        'contact.address': 'Adresse',
-        'contact.phone': 'Téléphone',
-        'contact.email': 'Email',
-        'contact.hours': 'Horaires d\'ouverture',
-        'contact.hoursDetail': 'Lun-Ven: 10h-19h<br>Samedi: 10h-20h<br>Dimanche: 11h-18h',
-        'contact.formName': 'Nom complet',
-        'contact.formEmail': 'Adresse email',
-        'contact.formSubject': 'Sujet (optionnel)',
-        'contact.formMessage': 'Votre message',
-        'contact.send': 'Envoyer le message',
-        
-        // Login
-        'login.title': 'Connexion',
-        'login.email': 'Adresse email',
-        'login.password': 'Mot de passe',
-        'login.remember': 'Se souvenir de moi',
-        'login.forgot': 'Mot de passe oublié?',
-        'login.submit': 'Se connecter',
-        'login.noAccount': 'Pas encore de compte?',
-        'login.createAccount': 'Créer un compte',
-        
-        // Signup
-        'signup.title': 'Créer un compte',
-        'signup.firstName': 'Prénom',
-        'signup.lastName': 'Nom',
-        'signup.email': 'Adresse email',
-        'signup.password': 'Mot de passe',
-        'signup.confirm': 'Confirmer le mot de passe',
-        'signup.terms': 'J\'accepte les <a href="#">conditions d\'utilisation</a>',
-        'signup.submit': 'Créer mon compte',
-        'signup.haveAccount': 'Vous avez déjà un compte?',
-        'signup.login': 'Se connecter',
-        
-        // Footer
-        'footer.description': 'Votre destination pour des parfums d\'exception depuis 2010.',
-        'footer.links': 'Liens rapides',
-        'footer.services': 'Services',
-        'footer.service1': 'Conseils personnalisés',
-        'footer.service2': 'Cadeaux & coffrets',
-        'footer.service3': 'Échantillons gratuits',
-        'footer.service4': 'Retours gratuits',
-        'footer.contact': 'Contact',
-        'footer.rights': 'Tous droits réservés.',
-        'footer.privacy': 'Politique de confidentialité',
-        'footer.terms': 'Conditions d\'utilisation',
-        'footer.cookies': 'Politique des cookies'
-    },
-    en: {
-        // Navigation
-        'nav.home': 'Home',
-        'nav.about': 'About',
-        'nav.products': 'Products',
-        'nav.contact': 'Contact',
-        'nav.profile': 'Profile',
-        'nav.cart': 'Cart',
-        'nav.login': 'Login',
-        'nav.signup': 'Sign Up',
-        
-        // Hero
-        'hero.title': 'The Art of Fragrance',
-        'hero.subtitle': 'Discover our exclusive collection of perfumes for men and women. Unique scents that tell your story.',
-        'hero.shop': 'Discover the collection',
-        'hero.learn': 'Learn more',
-        
-        // About
-        'about.title': 'About ES Parfumerie',
-        'about.text1': 'Since 2010, ES Parfumerie has offered a rigorous selection of the world\'s finest fragrances. Our passion for perfumes drives us to constantly seek excellence and authenticity.',
-        'about.text2': 'We collaborate with the best perfumers and perfume houses to offer you unique scents, combining tradition and innovation.',
-        'about.feature1.title': 'Premium Quality',
-        'about.feature1.text': 'Selection of the finest ingredients',
-        'about.feature2.title': 'Natural Ingredients',
-        'about.feature2.text': 'Environmentally friendly formulas',
-        'about.feature3.title': 'Fast Delivery',
-        'about.feature3.text': 'Shipping within 48h in France',
-        
-        // Products
-        'products.title': 'Our Perfumes',
-        'products.subtitle': 'Discover our exclusive collection',
-        'products.all': 'All',
-        'products.men': 'Men',
-        'products.women': 'Women',
-        'products.unisex': 'Unisex',
-        'products.empty': 'No products available',
-        'products.emptyDesc': 'Our collection will be available soon. Come back later!',
-        'products.addToCart': 'Add to cart',
-        'products.viewDetails': 'View details',
-        'products.outOfStock': 'Out of stock',
-        
-        // Contact
-        'contact.title': 'Contact Us',
-        'contact.address': 'Address',
-        'contact.phone': 'Phone',
-        'contact.email': 'Email',
-        'contact.hours': 'Opening Hours',
-        'contact.hoursDetail': 'Mon-Fri: 10am-7pm<br>Saturday: 10am-8pm<br>Sunday: 11am-6pm',
-        'contact.formName': 'Full name',
-        'contact.formEmail': 'Email address',
-        'contact.formSubject': 'Subject (optional)',
-        'contact.formMessage': 'Your message',
-        'contact.send': 'Send message',
-        
-        // Login
-        'login.title': 'Login',
-        'login.email': 'Email address',
-        'login.password': 'Password',
-        'login.remember': 'Remember me',
-        'login.forgot': 'Forgot password?',
-        'login.submit': 'Login',
-        'login.noAccount': 'Don\'t have an account?',
-        'login.createAccount': 'Create account',
-        
-        // Signup
-        'signup.title': 'Create Account',
-        'signup.firstName': 'First name',
-        'signup.lastName': 'Last name',
-        'signup.email': 'Email address',
-        'signup.password': 'Password',
-        'signup.confirm': 'Confirm password',
-        'signup.terms': 'I accept the <a href="#">terms of use</a>',
-        'signup.submit': 'Create my account',
-        'signup.haveAccount': 'Already have an account?',
-        'signup.login': 'Login',
-        
-        // Footer
-        'footer.description': 'Your destination for exceptional perfumes since 2010.',
-        'footer.links': 'Quick Links',
-        'footer.services': 'Services',
-        'footer.service1': 'Personalized advice',
-        'footer.service2': 'Gifts & sets',
-        'footer.service3': 'Free samples',
-        'footer.service4': 'Free returns',
-        'footer.contact': 'Contact',
-        'footer.rights': 'All rights reserved.',
-        'footer.privacy': 'Privacy Policy',
-        'footer.terms': 'Terms of Use',
-        'footer.cookies': 'Cookie Policy'
-    },
-    es: {
-        // Navigation
-        'nav.home': 'Inicio',
-        'nav.about': 'Acerca de',
-        'nav.products': 'Productos',
-        'nav.contact': 'Contacto',
-        'nav.profile': 'Perfil',
-        'nav.cart': 'Carrito',
-        'nav.login': 'Iniciar sesión',
-        'nav.signup': 'Registrarse',
-        
-        // Hero
-        'hero.title': 'El arte de la fragancia',
-        'hero.subtitle': 'Descubra nuestra exclusiva colección de perfumes para hombre y mujer. Aromas únicos que cuentan tu historia.',
-        'hero.shop': 'Descubrir la colección',
-        'hero.learn': 'Saber más',
-        
-        // About
-        'about.title': 'Acerca de ES Parfumerie',
-        'about.text1': 'Desde 2010, ES Parfumerie ofrece una selección rigurosa de las fragancias más finas del mundo. Nuestra pasión por los perfumes nos impulsa a buscar constantemente la excelencia y la autenticidad.',
-        'about.text2': 'Colaboramos con los mejores perfumistas y casas de perfume para ofrecerle aromas únicos, combinando tradición e innovación.',
-        'about.feature1.title': 'Calidad Premium',
-        'about.feature1.text': 'Selección de los mejores ingredientes',
-        'about.feature2.title': 'Ingredientes Naturales',
-        'about.feature2.text': 'Fórmulas respetuosas con el medio ambiente',
-        'about.feature3.title': 'Entrega Rápida',
-        'about.feature3.text': 'Envío en 48h en Francia',
-        
-        // Products
-        'products.title': 'Nuestros Perfumes',
-        'products.subtitle': 'Descubra nuestra exclusiva colección',
-        'products.all': 'Todos',
-        'products.men': 'Hombre',
-        'products.women': 'Mujer',
-        'products.unisex': 'Unisex',
-        'products.empty': 'No hay productos disponibles',
-        'products.emptyDesc': 'Nuestra colección estará disponible pronto. ¡Vuelva más tarde!',
-        'products.addToCart': 'Añadir al carrito',
-        'products.viewDetails': 'Ver detalles',
-        'products.outOfStock': 'Agotado',
-        
-        // Contact
-        'contact.title': 'Contáctenos',
-        'contact.address': 'Dirección',
-        'contact.phone': 'Teléfono',
-        'contact.email': 'Correo electrónico',
-        'contact.hours': 'Horario de apertura',
-        'contact.hoursDetail': 'Lun-Vie: 10h-19h<br>Sábado: 10h-20h<br>Domingo: 11h-18h',
-        'contact.formName': 'Nombre completo',
-        'contact.formEmail': 'Correo electrónico',
-        'contact.formSubject': 'Asunto (opcional)',
-        'contact.formMessage': 'Su mensaje',
-        'contact.send': 'Enviar mensaje',
-        
-        // Login
-        'login.title': 'Iniciar sesión',
-        'login.email': 'Correo electrónico',
-        'login.password': 'Contraseña',
-        'login.remember': 'Recordarme',
-        'login.forgot': '¿Olvidó su contraseña?',
-        'login.submit': 'Iniciar sesión',
-        'login.noAccount': '¿No tiene una cuenta?',
-        'login.createAccount': 'Crear cuenta',
-        
-        // Signup
-        'signup.title': 'Crear Cuenta',
-        'signup.firstName': 'Nombre',
-        'signup.lastName': 'Apellido',
-        'signup.email': 'Correo electrónico',
-        'signup.password': 'Contraseña',
-        'signup.confirm': 'Confirmar contraseña',
-        'signup.terms': 'Acepto los <a href="#">términos de uso</a>',
-        'signup.submit': 'Crear mi cuenta',
-        'signup.haveAccount': '¿Ya tiene una cuenta?',
-        'signup.login': 'Iniciar sesión',
-        
-        // Footer
-        'footer.description': 'Su destino para perfumes excepcionales desde 2010.',
-        'footer.links': 'Enlaces rápidos',
-        'footer.services': 'Servicios',
-        'footer.service1': 'Consejos personalizados',
-        'footer.service2': 'Regalos y juegos',
-        'footer.service3': 'Muestras gratuitas',
-        'footer.service4': 'Devoluciones gratuitas',
-        'footer.contact': 'Contacto',
-        'footer.rights': 'Todos los derechos reservados.',
-        'footer.privacy': 'Política de privacidad',
-        'footer.terms': 'Términos de uso',
-        'footer.cookies': 'Política de cookies'
-    }
+// Middleware pour vérifier si admin
+const isAdmin = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      error: 'Authentification requise'
+    });
+  }
+
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({
+      success: false,
+      error: 'Accès refusé. Droits administrateur requis'
+    });
+  }
+
+  next();
 };
 
-// Fonction pour changer la langue
-function changeLanguage(lang) {
-    AppState.language = lang;
-    document.documentElement.lang = lang;
-    
-    // Mettre à jour les textes avec data-i18n
-    document.querySelectorAll('[data-i18n]').forEach(element => {
-        const key = element.getAttribute('data-i18n');
-        if (translations[lang] && translations[lang][key]) {
-            if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
-                element.placeholder = translations[lang][key];
-            } else if (element.tagName === 'OPTION') {
-                element.textContent = translations[lang][key];
-            } else {
-                element.innerHTML = translations[lang][key];
-            }
-        }
+// ==================== ROUTES API ====================
+
+// Route racine
+app.get('/', (req, res) => {
+  res.json({
+    message: '🎉 ES Parfumerie API Backend',
+    version: '1.0.0',
+    status: 'online',
+    endpoints: {
+      products: '/api/products',
+      auth: {
+        login: '/api/auth/login (POST)',
+        register: '/api/auth/register (POST)',
+        adminLogin: '/api/auth/admin/login (POST)'
+      }
+    },
+    database: 'PostgreSQL',
+    frontend: process.env.FRONTEND_URL || 'https://es-parfumerie.netlify.app'
+  });
+});
+
+// Route de santé
+app.get('/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({
+      status: 'healthy',
+      database: 'connected',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime()
     });
-    
-    // Mettre à jour le sélecteur de langue
-    const languageSelect = document.getElementById('language-select');
-    if (languageSelect) languageSelect.value = lang;
-    
-    // Sauvegarder la préférence
-    localStorage.setItem('es-parfumerie-language', lang);
-}
+  } catch (error) {
+    res.status(500).json({
+      status: 'unhealthy',
+      database: 'disconnected',
+      error: error.message
+    });
+  }
+});
 
-// Fonction pour basculer le mode sombre
-function toggleDarkMode() {
-    AppState.darkMode = !AppState.darkMode;
-    document.body.classList.toggle('dark-mode', AppState.darkMode);
-    
-    // Mettre à jour l'icône
-    const themeToggle = document.getElementById('theme-toggle');
-    if (themeToggle) {
-        const icon = themeToggle.querySelector('i');
-        if (icon) {
-            icon.className = AppState.darkMode ? 'fas fa-sun' : 'fas fa-moon';
-        }
+// ==================== ROUTES AUTHENTIFICATION ====================
+
+// POST Connexion utilisateur
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email et mot de passe sont requis'
+      });
     }
-    
-    // Sauvegarder la préférence
-    localStorage.setItem('es-parfumerie-darkmode', AppState.darkMode);
-}
 
-// Fonction pour charger les produits depuis l'API
-async function loadProducts() {
-    if (AppState.isLoading) return;
+    // Chercher l'utilisateur dans la base de données
+    const userResult = await pool.query(
+      'SELECT * FROM users WHERE email = $1 AND is_active = true',
+      [email]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        error: 'Identifiants incorrects'
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // Vérifier le mot de passe
+    const isPasswordValid = await bcrypt.compare(password, user.password_hash);
     
-    AppState.isLoading = true;
-    const loadingEl = document.getElementById('products-loading');
-    const productsGrid = document.getElementById('products-grid');
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        error: 'Identifiants incorrects'
+      });
+    }
+
+    // Mettre à jour la date de dernière connexion
+    await pool.query(
+      'UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1',
+      [user.id]
+    );
+
+    // Créer le token JWT
+    const token = jwt.sign(
+      { 
+        id: user.id, 
+        email: user.email, 
+        role: user.role,
+        firstName: user.first_name,
+        lastName: user.last_name
+      },
+      process.env.JWT_SECRET || 'votre-secret-par-defaut',
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      success: true,
+      message: 'Connexion réussie',
+      token: token,
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        role: user.role,
+        phone: user.phone,
+        address: user.address
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la connexion:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur serveur'
+    });
+  }
+});
+
+// POST Inscription utilisateur
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, password, firstName, lastName, phone } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email et mot de passe sont requis'
+      });
+    }
+
+    // Validation du mot de passe
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Le mot de passe doit contenir au moins 6 caractères'
+      });
+    }
+
+    // Vérifier si l'email existe déjà
+    const existingUser = await pool.query(
+      'SELECT id FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (existingUser.rows.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Cet email est déjà utilisé'
+      });
+    }
+
+    // Hasher le mot de passe
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Insérer le nouvel utilisateur
+    const result = await pool.query(
+      `INSERT INTO users 
+       (email, password_hash, first_name, last_name, phone, role) 
+       VALUES ($1, $2, $3, $4, $5, 'user') 
+       RETURNING id, email, first_name, last_name, role`,
+      [email, hashedPassword, firstName || '', lastName || '', phone || '']
+    );
+
+    const user = result.rows[0];
+
+    // Créer le token JWT
+    const token = jwt.sign(
+      { 
+        id: user.id, 
+        email: user.email, 
+        role: user.role,
+        firstName: user.first_name,
+        lastName: user.last_name
+      },
+      process.env.JWT_SECRET || 'votre-secret-par-defaut',
+      { expiresIn: '7d' }
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Compte créé avec succès',
+      token: token,
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        role: user.role
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de l\'inscription:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur serveur'
+    });
+  }
+});
+
+// POST Connexion admin
+app.post('/api/auth/admin/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email et mot de passe sont requis'
+      });
+    }
+
+    // Chercher l'admin dans la base de données
+    const userResult = await pool.query(
+      'SELECT * FROM users WHERE email = $1 AND role = $2 AND is_active = true',
+      [email, 'admin']
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        error: 'Identifiants admin incorrects'
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // Vérifier le mot de passe
+    const isPasswordValid = await bcrypt.compare(password, user.password_hash);
     
-    try {
-        console.log('🔄 Chargement des produits depuis l\'API...');
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        error: 'Identifiants admin incorrects'
+      });
+    }
+
+    // Créer le token JWT
+    const token = jwt.sign(
+      { 
+        id: user.id, 
+        email: user.email, 
+        role: user.role,
+        name: 'Administrateur ES Parfumerie',
+        isAdmin: true
+      },
+      process.env.JWT_SECRET || 'votre-secret-par-defaut',
+      { expiresIn: '24h' }
+    );
+
+    res.json({
+      success: true,
+      message: 'Connexion admin réussie',
+      token: token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: 'Administrateur',
+        role: user.role,
+        permissions: ['all']
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur lors de la connexion admin:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur serveur'
+    });
+  }
+});
+
+// ==================== ROUTES PRODUITS ====================
+
+// GET tous les produits
+app.get('/api/products', async (req, res) => {
+  try {
+    const { category, minPrice, maxPrice, search } = req.query;
+    let query = 'SELECT * FROM products WHERE is_active = true';
+    const params = [];
+    let paramCount = 0;
+
+    if (category) {
+      paramCount++;
+      query += ` AND category = $${paramCount}`;
+      params.push(category);
+    }
+
+    if (minPrice) {
+      paramCount++;
+      query += ` AND price >= $${paramCount}`;
+      params.push(parseFloat(minPrice));
+    }
+
+    if (maxPrice) {
+      paramCount++;
+      query += ` AND price <= $${paramCount}`;
+      params.push(parseFloat(maxPrice));
+    }
+
+    if (search) {
+      paramCount++;
+      query += ` AND (name ILIKE $${paramCount} OR description ILIKE $${paramCount})`;
+      params.push(`%${search}%`);
+    }
+
+    query += ' ORDER BY created_at DESC';
+
+    const result = await pool.query(query, params);
+    
+    res.json({
+      success: true,
+      count: result.rows.length,
+      products: result.rows
+    });
+  } catch (error) {
+    console.error('Erreur lors de la récupération des produits:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur serveur'
+    });
+  }
+});
+
+// GET un produit par ID
+app.get('/api/products/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const result = await pool.query(
+      'SELECT * FROM products WHERE id = $1 AND is_active = true',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Produit non trouvé'
+      });
+    }
+
+    res.json({
+      success: true,
+      product: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Erreur lors de la récupération du produit:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur serveur'
+    });
+  }
+});
+
+// GET produits avec IDs spécifiques
+app.post('/api/products/by-ids', async (req, res) => {
+  try {
+    const { ids } = req.body;
+    
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.json({
+        success: true,
+        products: []
+      });
+    }
+
+    const result = await pool.query(
+      'SELECT * FROM products WHERE id = ANY($1) AND is_active = true',
+      [ids]
+    );
+
+    res.json({
+      success: true,
+      products: result.rows
+    });
+  } catch (error) {
+    console.error('Erreur:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur serveur'
+    });
+  }
+});
+
+// POST créer un nouveau produit (Admin uniquement)
+app.post('/api/products', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { name, description, price, stock, category, image_url, features } = req.body;
+
+    // Validation
+    if (!name || !description || !price || !category) {
+      return res.status(400).json({
+        success: false,
+        error: 'Nom, description, prix et catégorie sont requis'
+      });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO products 
+       (name, description, price, stock, category, image_url, features) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7) 
+       RETURNING *`,
+      [name, description, parseFloat(price), parseInt(stock || 0), 
+       category, image_url || '', features || []]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Produit créé avec succès',
+      product: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Erreur lors de la création du produit:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur serveur: ' + error.message
+    });
+  }
+});
+
+// PUT mettre à jour un produit (Admin uniquement)
+app.put('/api/products/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+
+    // Vérifier si le produit existe
+    const checkResult = await pool.query(
+      'SELECT * FROM products WHERE id = $1',
+      [id]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Produit non trouvé'
+      });
+    }
+
+    // Construire la requête dynamique
+    const fields = [];
+    const values = [];
+    let paramCount = 1;
+
+    Object.keys(updates).forEach(key => {
+      if (['name', 'description', 'price', 'stock', 'category', 'image_url', 'features', 'is_active'].includes(key)) {
+        fields.push(`${key} = $${paramCount}`);
         
-        if (loadingEl) loadingEl.style.display = 'block';
-        if (productsGrid) {
-            productsGrid.innerHTML = `
-                <div class="no-products">
-                    <i class="fas fa-spinner fa-spin"></i>
-                    <h3>Chargement des produits...</h3>
-                    <p>Veuillez patienter</p>
-                </div>
-            `;
-        }
-        
-        // Ajouter un timestamp pour éviter le cache
-        const timestamp = new Date().getTime();
-        const response = await fetch(`${API_BASE_URL}/api/products?t=${timestamp}`);
-        
-        if (response.ok) {
-            const data = await response.json();
-            AppState.products = data.products || [];
-            console.log(`✅ ${AppState.products.length} produits chargés`);
-            
-            displayProducts();
-            
-            // Afficher le bouton admin si l'utilisateur est admin
-            const adminActions = document.getElementById('admin-actions');
-            if (adminActions && AppState.currentUser && AppState.currentUser.role === 'admin') {
-                adminActions.style.display = 'block';
-            }
-            
-            showNotification(`✅ ${AppState.products.length} produits chargés`, 'success');
-            
+        // Convertir les types si nécessaire
+        if (key === 'price') {
+          values.push(parseFloat(updates[key]));
+        } else if (key === 'stock') {
+          values.push(parseInt(updates[key]));
         } else {
-            console.error('❌ Erreur API:', response.status, response.statusText);
-            AppState.products = [];
-            
-            if (productsGrid) {
-                productsGrid.innerHTML = `
-                    <div class="no-products">
-                        <i class="fas fa-exclamation-triangle"></i>
-                        <h3>Erreur de connexion au serveur</h3>
-                        <p>Impossible de charger les produits. Veuillez réessayer plus tard.</p>
-                        <button onclick="loadProducts()" class="btn-primary">
-                            <i class="fas fa-sync-alt"></i> Réessayer
-                        </button>
-                    </div>
-                `;
-            }
+          values.push(updates[key]);
         }
-    } catch (error) {
-        console.error('❌ Erreur réseau:', error);
-        AppState.products = [];
         
-        if (productsGrid) {
-            productsGrid.innerHTML = `
-                <div class="no-products">
-                    <i class="fas fa-wifi-slash"></i>
-                    <h3>Problème de connexion</h3>
-                    <p>Impossible de se connecter au serveur. Vérifiez votre connexion internet.</p>
-                    <button onclick="loadProducts()" class="btn-primary">
-                        <i class="fas fa-sync-alt"></i> Réessayer
-                    </button>
-                </div>
-            `;
-        }
-    } finally {
-        AppState.isLoading = false;
-        if (loadingEl) loadingEl.style.display = 'none';
-    }
-}
-
-// Fonction pour afficher les produits
-function displayProducts(filter = 'all') {
-    const productsGrid = document.getElementById('products-grid');
-    
-    if (!productsGrid) return;
-    
-    // Filtrer les produits
-    let filteredProducts = AppState.products;
-    if (filter !== 'all') {
-        filteredProducts = AppState.products.filter(product => product.category === filter);
-    }
-    
-    // Si aucun produit
-    if (filteredProducts.length === 0) {
-        productsGrid.innerHTML = `
-            <div class="no-products">
-                <i class="fas fa-box-open"></i>
-                <h3 data-i18n="products.empty">Aucun produit disponible</h3>
-                <p data-i18n="products.emptyDesc">Notre collection sera bientôt disponible. Revenez plus tard !</p>
-                ${AppState.products.length === 0 ? `
-                    <button onclick="loadProducts()" class="btn-primary">
-                        <i class="fas fa-sync-alt"></i> Actualiser
-                    </button>
-                ` : ''}
-            </div>
-        `;
-        
-        // Réappliquer les traductions
-        changeLanguage(AppState.language);
-        return;
-    }
-    
-    // Générer les cartes de produits
-    productsGrid.innerHTML = filteredProducts.map(product => `
-        <div class="product-card" data-category="${product.category}">
-            <div class="product-image">
-                <img src="${product.image_url || product.image || 'https://images.unsplash.com/photo-1541643600914-78b084683601?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80'}" 
-                     alt="${product.name}"
-                     onerror="this.src='https://via.placeholder.com/400x300?text=ES+Parfumerie'">
-            </div>
-            <div class="product-info">
-                <span class="product-category">
-                    ${product.category === 'men' ? 'Homme' : 
-                      product.category === 'women' ? 'Femme' : 'Unisex'}
-                </span>
-                <h3>${product.name}</h3>
-                <p>${(product.description || '').substring(0, 100)}${product.description && product.description.length > 100 ? '...' : ''}</p>
-                <div class="product-price">${parseFloat(product.price).toFixed(2)} €</div>
-                <div class="product-stock" style="font-size: 0.9rem; color: ${product.stock > 10 ? '#2ecc71' : product.stock > 0 ? '#f39c12' : '#e74c3c'}; margin: 5px 0;">
-                    ${product.stock > 10 ? '🟢 En stock' : 
-                     product.stock > 0 ? '🟡 Stock limité' : '🔴 Rupture de stock'}
-                </div>
-                <div class="product-actions">
-                    ${product.stock > 0 ? 
-                        `<button class="btn-primary add-to-cart" data-id="${product.id}" data-i18n="products.addToCart">Ajouter au panier</button>` : 
-                        `<button class="btn-outline" disabled data-i18n="products.outOfStock">Rupture de stock</button>`
-                    }
-                    <button class="btn-outline view-details" data-id="${product.id}" data-i18n="products.viewDetails">Voir détails</button>
-                </div>
-            </div>
-        </div>
-    `).join('');
-    
-    // Réappliquer les traductions
-    changeLanguage(AppState.language);
-    
-    // Ajouter les événements aux boutons
-    document.querySelectorAll('.add-to-cart').forEach(button => {
-        button.addEventListener('click', function() {
-            const productId = this.getAttribute('data-id');
-            addToCart(productId);
-        });
+        paramCount++;
+      }
     });
-}
 
-// Fonction pour ajouter au panier
-function addToCart(productId) {
-    const product = AppState.products.find(p => p.id == productId);
-    
-    if (!product) {
-        showNotification('Produit non trouvé', 'error');
-        return;
+    if (fields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Aucune donnée valide à mettre à jour'
+      });
     }
-    
-    // Vérifier le stock
-    if (product.stock <= 0) {
-        showNotification('Ce produit est en rupture de stock', 'error');
-        return;
-    }
-    
-    // Ajouter au panier
-    const cartItem = AppState.cart.find(item => item.product.id == productId);
-    
-    if (cartItem) {
-        if (cartItem.quantity < product.stock) {
-            cartItem.quantity++;
-        } else {
-            showNotification('Stock insuffisant pour ce produit', 'error');
-            return;
-        }
-    } else {
-        AppState.cart.push({
-            product: product,
-            quantity: 1
-        });
-    }
-    
-    // Mettre à jour le compteur du panier
-    updateCartCount();
-    
-    // Sauvegarder le panier dans localStorage
-    saveCartToLocalStorage();
-    
-    // Afficher une notification
-    showNotification(`${product.name} a été ajouté au panier`, 'success');
-}
 
-// Fonction pour mettre à jour le compteur du panier
-function updateCartCount() {
-    const cartCount = document.querySelector('.cart-count');
-    if (cartCount) {
-        const totalItems = AppState.cart.reduce((total, item) => total + item.quantity, 0);
-        cartCount.textContent = totalItems;
-    }
-}
-
-// Fonction pour sauvegarder le panier dans localStorage
-function saveCartToLocalStorage() {
-    const cartData = {
-        items: AppState.cart.map(item => ({
-            productId: item.product.id,
-            quantity: item.quantity
-        })),
-        timestamp: new Date().getTime()
-    };
-    
-    localStorage.setItem('es-parfumerie-cart', JSON.stringify(cartData));
-}
-
-// Fonction pour charger le panier depuis localStorage
-function loadCartFromLocalStorage() {
-    const cartData = localStorage.getItem('es-parfumerie-cart');
-    
-    if (cartData) {
-        try {
-            const parsedData = JSON.parse(cartData);
-            
-            // Pour chaque élément du panier, trouver le produit correspondant
-            parsedData.items.forEach(item => {
-                const product = AppState.products.find(p => p.id == item.productId);
-                if (product) {
-                    AppState.cart.push({
-                        product: product,
-                        quantity: item.quantity
-                    });
-                }
-            });
-        } catch (error) {
-            console.error('Erreur lors du chargement du panier:', error);
-        }
-    }
-    
-    updateCartCount();
-}
-
-// Fonction pour afficher une notification
-function showNotification(message, type = 'success') {
-    // Créer l'élément de notification
-    const notification = document.createElement('div');
-    notification.className = `notification ${type}`;
-    notification.innerHTML = `
-        <div class="notification-content">
-            <i class="fas fa-${type === 'success' ? 'check-circle' : 'exclamation-circle'}"></i>
-            <span>${message}</span>
-        </div>
-        <button class="notification-close">&times;</button>
+    values.push(id);
+    const query = `
+      UPDATE products 
+      SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $${paramCount} 
+      RETURNING *
     `;
-    
-    // Ajouter au body
-    document.body.appendChild(notification);
-    
-    // Animation d'entrée
-    setTimeout(() => {
-        notification.classList.add('show');
-    }, 10);
-    
-    // Fermer la notification
-    const closeBtn = notification.querySelector('.notification-close');
-    closeBtn.addEventListener('click', () => {
-        notification.classList.remove('show');
-        setTimeout(() => {
-            if (notification.parentNode) {
-                notification.parentNode.removeChild(notification);
-            }
-        }, 300);
-    });
-    
-    // Fermeture automatique après 5 secondes
-    setTimeout(() => {
-        if (notification.parentNode) {
-            notification.classList.remove('show');
-            setTimeout(() => {
-                if (notification.parentNode) {
-                    notification.parentNode.removeChild(notification);
-                }
-            }, 300);
-        }
-    }, 5000);
-}
 
-// Fonction pour gérer la connexion
-async function handleLogin(email, password, rememberMe) {
-    try {
-        showNotification('Connexion en cours...', 'info');
-        
-        // Simulation de succès
-        setTimeout(() => {
-            AppState.currentUser = {
-                id: 1,
-                email: email,
-                firstName: 'Jean',
-                lastName: 'Dupont',
-                role: email === 'admin@esparfumerie.com' ? 'admin' : 'user'
-            };
-            
-            // Mettre à jour l'interface
-            updateUserInterface();
-            
-            // Fermer le modal
-            closeModal('login-modal');
-            
-            // Afficher une notification
-            showNotification('Connexion réussie !', 'success');
-            
-            // Sauvegarder dans localStorage si "Se souvenir de moi"
-            if (rememberMe) {
-                localStorage.setItem('es-parfumerie-user', JSON.stringify(AppState.currentUser));
-            }
-        }, 1000);
-        
-    } catch (error) {
-        console.error('Erreur de connexion:', error);
-        showNotification('Échec de la connexion. Veuillez vérifier vos identifiants.', 'error');
-    }
-}
+    const result = await pool.query(query, values);
 
-// Fonction pour gérer l'inscription
-async function handleSignup(firstName, lastName, email, password) {
-    try {
-        showNotification('Création du compte en cours...', 'info');
-        
-        setTimeout(() => {
-            // Simulation de succès
-            AppState.currentUser = {
-                id: 1,
-                email: email,
-                firstName: firstName,
-                lastName: lastName,
-                role: 'user'
-            };
-            
-            // Mettre à jour l'interface
-            updateUserInterface();
-            
-            // Fermer le modal
-            closeModal('signup-modal');
-            
-            // Afficher une notification
-            showNotification('Compte créé avec succès !', 'success');
-            
-            // Sauvegarder dans localStorage
-            localStorage.setItem('es-parfumerie-user', JSON.stringify(AppState.currentUser));
-        }, 1000);
-        
-    } catch (error) {
-        console.error('Erreur d\'inscription:', error);
-        showNotification('Échec de la création du compte. Veuillez réessayer.', 'error');
-    }
-}
+    res.json({
+      success: true,
+      message: 'Produit mis à jour avec succès',
+      product: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Erreur lors de la mise à jour du produit:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur serveur'
+    });
+  }
+});
 
-// Fonction pour mettre à jour l'interface utilisateur
-function updateUserInterface() {
-    const authButtons = document.querySelector('.auth-buttons');
-    const adminActions = document.getElementById('admin-actions');
-    
-    if (AppState.currentUser) {
-        // Masquer les boutons de connexion/inscription
-        if (authButtons) authButtons.style.display = 'none';
-        
-        // Afficher le bouton admin si l'utilisateur est admin
-        if (adminActions && AppState.currentUser.role === 'admin') {
-            adminActions.style.display = 'block';
-        }
-    } else {
-        // Afficher les boutons de connexion/inscription
-        if (authButtons) authButtons.style.display = 'flex';
-        
-        // Masquer le bouton admin
-        if (adminActions) adminActions.style.display = 'none';
-    }
-}
+// DELETE supprimer un produit (Admin uniquement)
+app.delete('/api/products/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
 
-// Fonction pour ouvrir un modal
-function openModal(modalId) {
-    const modal = document.getElementById(modalId);
-    if (modal) {
-        modal.classList.add('active');
-        document.body.style.overflow = 'hidden';
-    }
-}
+    // Vérifier si le produit existe
+    const checkResult = await pool.query(
+      'SELECT * FROM products WHERE id = $1',
+      [id]
+    );
 
-// Fonction pour fermer un modal
-function closeModal(modalId) {
-    const modal = document.getElementById(modalId);
-    if (modal) {
-        modal.classList.remove('active');
-        document.body.style.overflow = 'auto';
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Produit non trouvé'
+      });
     }
-}
 
-// Initialisation de l'application
-document.addEventListener('DOMContentLoaded', function() {
-    // Initialiser l'année dans le footer
-    document.getElementById('current-year').textContent = new Date().getFullYear();
-    
-    // Charger les préférences utilisateur
-    const savedLanguage = localStorage.getItem('es-parfumerie-language') || 'fr';
-    const savedDarkMode = localStorage.getItem('es-parfumerie-darkmode') === 'true';
-    const savedUser = localStorage.getItem('es-parfumerie-user');
-    
-    // Appliquer les préférences
-    AppState.language = savedLanguage;
-    AppState.darkMode = savedDarkMode;
-    
-    if (savedUser) {
-        try {
-            AppState.currentUser = JSON.parse(savedUser);
-        } catch (error) {
-            console.error('Erreur lors du chargement de l\'utilisateur:', error);
-        }
-    }
-    
-    // Appliquer le mode sombre
-    if (AppState.darkMode) {
-        document.body.classList.add('dark-mode');
-        const themeToggle = document.getElementById('theme-toggle');
-        if (themeToggle) {
-            const icon = themeToggle.querySelector('i');
-            if (icon) {
-                icon.className = 'fas fa-sun';
-            }
-        }
-    }
-    
-    // Appliquer la langue
-    changeLanguage(AppState.language);
-    
-    // Mettre à jour l'interface utilisateur
-    updateUserInterface();
-    
-    // Charger les produits
-    loadProducts();
-    
-    // Charger le panier (après le chargement des produits)
-    setTimeout(() => {
-        loadCartFromLocalStorage();
-    }, 1000);
-    
-    // Navigation mobile
-    const menuToggle = document.getElementById('menu-toggle');
-    const mobileMenu = document.getElementById('mobile-menu');
-    const closeMenu = document.getElementById('close-menu');
-    
-    if (menuToggle && mobileMenu) {
-        menuToggle.addEventListener('click', () => {
-            mobileMenu.classList.add('open');
-        });
-    }
-    
-    if (closeMenu && mobileMenu) {
-        closeMenu.addEventListener('click', () => {
-            mobileMenu.classList.remove('open');
-        });
-    }
-    
-    // Fermer le menu mobile en cliquant sur un lien
-    document.querySelectorAll('.mobile-menu a').forEach(link => {
-        link.addEventListener('click', () => {
-            mobileMenu.classList.remove('open');
-        });
+    // Soft delete (désactiver le produit)
+    await pool.query(
+      'UPDATE products SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+      [id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Produit supprimé avec succès'
     });
-    
-    // Basculer le mode sombre
-    const themeToggle = document.getElementById('theme-toggle');
-    if (themeToggle) {
-        themeToggle.addEventListener('click', toggleDarkMode);
+  } catch (error) {
+    console.error('Erreur lors de la suppression du produit:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur serveur'
+    });
+  }
+});
+
+// ==================== ROUTES UTILISATEURS ====================
+
+// GET informations utilisateur
+app.get('/api/users/me', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Non authentifié'
+      });
     }
-    
-    // Changer la langue
-    const languageSelect = document.getElementById('language-select');
-    if (languageSelect) {
-        languageSelect.value = AppState.language;
-        languageSelect.addEventListener('change', function() {
-            changeLanguage(this.value);
-        });
+
+    const result = await pool.query(
+      'SELECT id, email, first_name, last_name, phone, address, city, postal_code, country, role, created_at FROM users WHERE id = $1',
+      [req.user.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Utilisateur non trouvé'
+      });
     }
-    
-    // Navigation entre sections
-    document.querySelectorAll('a[href^="#"]').forEach(link => {
-        link.addEventListener('click', function(e) {
-            const href = this.getAttribute('href');
-            
-            if (href.startsWith('#') && href.length > 1) {
-                e.preventDefault();
-                
-                // Mettre à jour la navigation active
-                document.querySelectorAll('.nav-links a').forEach(navLink => {
-                    navLink.classList.remove('active');
-                });
-                
-                this.classList.add('active');
-                
-                // Scroll vers la section
-                const targetId = href.substring(1);
-                const targetElement = document.getElementById(targetId);
-                
-                if (targetElement) {
-                    window.scrollTo({
-                        top: targetElement.offsetTop - 100,
-                        behavior: 'smooth'
-                    });
-                }
-                
-                // Fermer le menu mobile
-                if (mobileMenu) {
-                    mobileMenu.classList.remove('open');
-                }
-            }
-        });
+
+    res.json({
+      success: true,
+      user: result.rows[0]
     });
-    
-    // Modals
-    const modals = document.querySelectorAll('.modal');
-    const closeModalButtons = document.querySelectorAll('.close-modal');
-    
-    // Ouvrir les modals
-    document.getElementById('login-btn')?.addEventListener('click', () => openModal('login-modal'));
-    document.getElementById('signup-btn')?.addEventListener('click', () => openModal('signup-modal'));
-    document.getElementById('mobile-login-btn')?.addEventListener('click', () => openModal('login-modal'));
-    document.getElementById('mobile-signup-btn')?.addEventListener('click', () => openModal('signup-modal'));
-    document.getElementById('switch-to-signup')?.addEventListener('click', () => {
-        closeModal('login-modal');
-        openModal('signup-modal');
+  } catch (error) {
+    console.error('Erreur:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur serveur'
     });
-    document.getElementById('switch-to-login')?.addEventListener('click', () => {
-        closeModal('signup-modal');
-        openModal('login-modal');
-    });
-    
-    // Fermer les modals
-    closeModalButtons.forEach(button => {
-        button.addEventListener('click', function() {
-            const modal = this.closest('.modal');
-            if (modal) {
-                closeModal(modal.id);
-            }
-        });
-    });
-    
-    // Fermer les modals en cliquant à l'extérieur
-    modals.forEach(modal => {
-        modal.addEventListener('click', function(e) {
-            if (e.target === this) {
-                closeModal(this.id);
-            }
-        });
-    });
-    
-    // Formulaire de connexion
-    const loginForm = document.getElementById('login-form');
-    if (loginForm) {
-        loginForm.addEventListener('submit', function(e) {
-            e.preventDefault();
-            
-            const email = document.getElementById('login-email').value;
-            const password = document.getElementById('login-password').value;
-            const rememberMe = document.getElementById('remember-me').checked;
-            
-            handleLogin(email, password, rememberMe);
-        });
+  }
+});
+
+// PUT mettre à jour le profil utilisateur
+app.put('/api/users/me', authenticateToken, async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Non authentifié'
+      });
     }
+
+    const { first_name, last_name, phone, address, city, postal_code, country } = req.body;
     
-    // Formulaire d'inscription
-    const signupForm = document.getElementById('signup-form');
-    if (signupForm) {
-        signupForm.addEventListener('submit', function(e) {
-            e.preventDefault();
-            
-            const firstName = document.getElementById('signup-firstname').value;
-            const lastName = document.getElementById('signup-lastname').value;
-            const email = document.getElementById('signup-email').value;
-            const password = document.getElementById('signup-password').value;
-            const confirmPassword = document.getElementById('signup-confirm').value;
-            
-            // Validation basique
-            if (password !== confirmPassword) {
-                showNotification('Les mots de passe ne correspondent pas.', 'error');
-                return;
-            }
-            
-            if (password.length < 6) {
-                showNotification('Le mot de passe doit contenir au moins 6 caractères.', 'error');
-                return;
-            }
-            
-            handleSignup(firstName, lastName, email, password);
-        });
-    }
-    
-    // Formulaire de contact
-    const contactForm = document.getElementById('contact-form');
-    if (contactForm) {
-        contactForm.addEventListener('submit', function(e) {
-            e.preventDefault();
-            
-            // Simulation d'envoi
-            showNotification('Votre message a été envoyé avec succès !', 'success');
-            this.reset();
-        });
-    }
-    
-    // Filtrage des produits
-    document.querySelectorAll('.filter-btn').forEach(button => {
-        button.addEventListener('click', function() {
-            // Mettre à jour les boutons actifs
-            document.querySelectorAll('.filter-btn').forEach(btn => {
-                btn.classList.remove('active');
-            });
-            
-            this.classList.add('active');
-            
-            // Filtrer les produits
-            const filter = this.getAttribute('data-filter');
-            displayProducts(filter);
-        });
+    const result = await pool.query(
+      `UPDATE users 
+       SET first_name = COALESCE($1, first_name),
+           last_name = COALESCE($2, last_name),
+           phone = COALESCE($3, phone),
+           address = COALESCE($4, address),
+           city = COALESCE($5, city),
+           postal_code = COALESCE($6, postal_code),
+           country = COALESCE($7, country),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $8
+       RETURNING id, email, first_name, last_name, phone, address, city, postal_code, country`,
+      [first_name, last_name, phone, address, city, postal_code, country, req.user.id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Profil mis à jour avec succès',
+      user: result.rows[0]
     });
-    
-    // Bouton de rafraîchissement des produits
-    const refreshBtn = document.getElementById('refresh-products');
-    if (refreshBtn) {
-        refreshBtn.addEventListener('click', function() {
-            this.disabled = true;
-            const originalHTML = this.innerHTML;
-            this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Chargement...';
-            
-            loadProducts();
-            
-            setTimeout(() => {
-                this.disabled = false;
-                this.innerHTML = originalHTML;
-            }, 2000);
-        });
-    }
-    
-    // Écouter les messages depuis le panel admin
-    window.addEventListener('message', function(event) {
-        if (event.data && event.data.type === 'RELOAD_PRODUCTS') {
-            console.log('🔄 Rechargement des produits demandé depuis le panel admin');
-            showNotification('Nouveaux produits disponibles !', 'info');
-            loadProducts();
-        }
+  } catch (error) {
+    console.error('Erreur:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erreur serveur'
     });
-    
-    // Rafraîchir les produits toutes les 60 secondes
-    setInterval(() => {
-        if (document.visibilityState === 'visible') {
-            loadProducts();
-        }
-    }, 60000);
-    
-    // Ajouter les styles pour les notifications
-    const style = document.createElement('style');
-    style.textContent = `
-        .notification {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background-color: var(--bg-color);
-            color: var(--text-color);
-            border-radius: var(--radius);
-            box-shadow: var(--shadow-hover);
-            padding: var(--space-md);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            min-width: 300px;
-            max-width: 400px;
-            z-index: 1003;
-            transform: translateX(100%);
-            opacity: 0;
-            transition: transform 0.3s ease, opacity 0.3s ease;
-            border-left: 4px solid #4CAF50;
-        }
-        
-        .notification.show {
-            transform: translateX(0);
-            opacity: 1;
-        }
-        
-        .notification.error {
-            border-left-color: #f44336;
-        }
-        
-        .notification.info {
-            border-left-color: #2196F3;
-        }
-        
-        .notification-content {
-            display: flex;
-            align-items: center;
-            gap: var(--space-sm);
-            flex-grow: 1;
-        }
-        
-        .notification-content i {
-            font-size: 1.5rem;
-        }
-        
-        .notification.success .notification-content i {
-            color: #4CAF50;
-        }
-        
-        .notification.error .notification-content i {
-            color: #f44336;
-        }
-        
-        .notification.info .notification-content i {
-            color: #2196F3;
-        }
-        
-        .notification-close {
-            background: none;
-            border: none;
-            color: var(--text-light);
-            font-size: 1.5rem;
-            cursor: pointer;
-            line-height: 1;
-            padding: 0;
-            margin-left: var(--space-sm);
-        }
-        
-        @media (max-width: 768px) {
-            .notification {
-                left: 20px;
-                right: 20px;
-                min-width: auto;
-                max-width: none;
-            }
-        }
-    `;
-    document.head.appendChild(style);
+  }
+});
+
+// ==================== GESTION DES ERREURS ====================
+
+// Route 404
+app.use('*', (req, res) => {
+  res.status(404).json({
+    error: 'Route non trouvée',
+    path: req.originalUrl
+  });
+});
+
+// Gestion des erreurs globales
+app.use((err, req, res, next) => {
+  console.error('🔥 Erreur serveur:', err);
+  
+  res.status(err.status || 500).json({
+    success: false,
+    error: process.env.NODE_ENV === 'production' 
+      ? 'Une erreur est survenue sur le serveur' 
+      : err.message
+  });
+});
+
+// ==================== DÉMARRAGE DU SERVEUR ====================
+
+app.listen(PORT, () => {
+  console.log(`🚀 Serveur backend démarré sur le port ${PORT}`);
+  console.log(`🔗 URL: http://localhost:${PORT}`);
+  console.log(`🌍 Frontend: ${process.env.FRONTEND_URL || 'https://es-parfumerie.netlify.app'}`);
+  console.log(`🗄️  Base de données: PostgreSQL (Render)`);
+  console.log(`👤 Compte admin: admin@esparfumerie.com / admin123`);
+  console.log('========================================');
 });
