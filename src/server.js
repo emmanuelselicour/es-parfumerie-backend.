@@ -1,3 +1,4 @@
+// src/server.js
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -42,7 +43,8 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     message: 'ES Parfumerie API is running',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
   });
 });
 
@@ -76,8 +78,7 @@ app.use((err, req, res, next) => {
 // Démarrer le serveur
 app.listen(PORT, () => {
   console.log(`🚀 Serveur démarré sur le port ${PORT}`);
-  console.log(`🌍 Environnement: ${process.env.NODE_ENV}`);
-  console.log(`🔗 Frontend URL: ${process.env.FRONTEND_URL}`);
-  console.log(`🔗 Backend URL: ${process.env.BACKEND_URL}`);
-  console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
+  console.log(`🌍 Environnement: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔗 Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:3000'}`);
+  console.log(`🔐 JWT Secret: ${process.env.JWT_SECRET ? 'Défini' : 'Non défini - utilisation fallback'}`);
 });
