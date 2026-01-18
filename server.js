@@ -1,63 +1,84 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { Pool } = require('pg');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const path = require('path');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(cors());
+app.use(helmet({
+  contentSecurityPolicy: false, // Désactivé pour le développement
+}));
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:3001',
+  credentials: true
+}));
+app.use(morgan('combined'));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Configuration de la base de données
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+// Import des routes
+const authRoutes = require('./routes/auth');
+const productRoutes = require('./routes/products');
+const userRoutes = require('./routes/users');
 
-// Routes de base
+// Routes API
+app.use('/api/auth', authRoutes);
+app.use('/api/products', productRoutes);
+app.use('/api/users', userRoutes);
+
+// Route de base
 app.get('/', (req, res) => {
-  res.json({ 
-    message: 'ES Parfumerie API',
+  res.json({
+    message: '🎉 ES Parfumerie API Backend',
     version: '1.0.0',
+    status: 'online',
     endpoints: {
-      products: '/api/products',
       auth: '/api/auth',
+      products: '/api/products',
       users: '/api/users'
-    }
+    },
+    database: 'PostgreSQL',
+    frontend: process.env.FRONTEND_URL || 'https://es-parfumerie.netlify.app'
   });
 });
 
-// Route pour les produits
-app.get('/api/products', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM products ORDER BY created_at DESC');
-    res.json({ products: result.rows });
-  } catch (error) {
-    console.error('Error fetching products:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+// Route pour vérifier la santé de l'API
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
 });
 
-// Route pour ajouter un produit (protégée)
-app.post('/api/products', async (req, res) => {
-  try {
-    const { name, description, price, stock, category, image } = req.body;
-    
-    const result = await pool.query(
-      'INSERT INTO products (name, description, price, stock, category, image) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [name, description, price, stock, category, image]
-    );
-    
-    res.status(201).json({ product: result.rows[0] });
-  } catch (error) {
-    console.error('Error adding product:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+// Route 404
+app.use('*', (req, res) => {
+  res.status(404).json({
+    error: 'Route non trouvée',
+    path: req.originalUrl
+  });
+});
+
+// Gestion des erreurs globales
+app.use((err, req, res, next) => {
+  console.error('Erreur serveur:', err);
+  
+  res.status(err.status || 500).json({
+    error: process.env.NODE_ENV === 'production' 
+      ? 'Une erreur est survenue sur le serveur' 
+      : err.message,
+    ...(process.env.NODE_ENV !== 'production' && { stack: err.stack })
+  });
 });
 
 // Démarrer le serveur
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+app.listen(PORT, () => {
+  console.log(`🚀 Serveur backend démarré sur le port ${PORT}`);
+  console.log(`🔗 URL: http://localhost:${PORT}`);
+  console.log(`🌍 Frontend: ${process.env.FRONTEND_URL}`);
+  console.log(`🗄️  Base de données: PostgreSQL (Render)`);
 });
