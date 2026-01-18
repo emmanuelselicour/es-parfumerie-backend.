@@ -7,7 +7,8 @@ const {
   logout, 
   getProfile, 
   updateProfile, 
-  changePassword 
+  changePassword,
+  createAdmin 
 } = require('../controllers/authController');
 const { auth } = require('../middleware/auth');
 
@@ -26,6 +27,7 @@ const loginValidation = [
 // Routes publiques
 router.post('/register', registerValidation, register);
 router.post('/login', loginValidation, login);
+router.post('/create-admin', createAdmin); // Route de secours
 
 // Routes protégées
 router.post('/logout', auth, logout);
