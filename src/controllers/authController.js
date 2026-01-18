@@ -1,4 +1,4 @@
-// src/controllers/authController.js - VERSION ULTRA SIMPLIFIÉE
+// src/controllers/authController.js - FICHIER COMPLET
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { Pool } = require('pg');
@@ -49,6 +49,52 @@ async function createUser(userData) {
     throw error;
   }
 }
+
+const register = async (req, res) => {
+  try {
+    console.log('📝 Tentative d\'inscription');
+    
+    const { name, email, password } = req.body;
+    
+    if (!name || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Tous les champs sont requis'
+      });
+    }
+    
+    // Vérifier si l'utilisateur existe déjà
+    const existingUser = await findUserByEmail(email);
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: 'Un compte avec cet email existe déjà'
+      });
+    }
+    
+    const user = await createUser({ name, email, password });
+    const token = generateToken(user.id);
+    
+    console.log(`✅ Utilisateur créé: ${email}`);
+    
+    res.status(201).json({
+      success: true,
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    console.error('❌ Erreur inscription:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de l\'inscription'
+    });
+  }
+};
 
 const login = async (req, res) => {
   try {
@@ -196,29 +242,117 @@ const login = async (req, res) => {
   }
 };
 
-// Autres fonctions simplifiées
-const register = async (req, res) => {
+const logout = (req, res) => {
+  res.json({
+    success: true,
+    message: 'Déconnexion réussie'
+  });
+};
+
+const getProfile = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const user = await findUserByEmail(req.user.email);
     
-    const user = await createUser({ name, email, password });
-    const token = generateToken(user.id);
-    
-    res.status(201).json({
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'Utilisateur non trouvé'
+      });
+    }
+
+    res.json({
       success: true,
-      token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role
-      }
+      user
     });
+
   } catch (error) {
-    console.error('Erreur inscription:', error);
+    console.error('Erreur récupération profil:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de l\'inscription'
+      message: 'Erreur serveur'
+    });
+  }
+};
+
+const updateProfile = async (req, res) => {
+  try {
+    const { name, phone, address, city, country, postal_code } = req.body;
+    
+    const updates = {};
+    if (name !== undefined) updates.name = name;
+    if (phone !== undefined) updates.phone = phone;
+    if (address !== undefined) updates.address = address;
+    if (city !== undefined) updates.city = city;
+    if (country !== undefined) updates.country = country;
+    if (postal_code !== undefined) updates.postal_code = postal_code;
+
+    // Mettre à jour l'utilisateur
+    await pool.query(
+      `UPDATE users SET 
+        name = COALESCE($1, name),
+        phone = COALESCE($2, phone),
+        address = COALESCE($3, address),
+        city = COALESCE($4, city),
+        country = COALESCE($5, country),
+        postal_code = COALESCE($6, postal_code),
+        updated_at = CURRENT_TIMESTAMP
+       WHERE id = $7`,
+      [name, phone, address, city, country, postal_code, req.user.id]
+    );
+
+    // Récupérer l'utilisateur mis à jour
+    const result = await pool.query(
+      'SELECT * FROM users WHERE id = $1',
+      [req.user.id]
+    );
+
+    res.json({
+      success: true,
+      user: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Erreur mise à jour profil:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur'
+    });
+  }
+};
+
+const changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    // Vérifier le mot de passe actuel
+    const user = await findUserByEmail(req.user.email);
+    const isValid = await bcrypt.compare(currentPassword, user.password);
+    
+    if (!isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Mot de passe actuel incorrect'
+      });
+    }
+
+    // Mettre à jour le mot de passe
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    await pool.query(
+      'UPDATE users SET password = $1 WHERE id = $2',
+      [hashedPassword, req.user.id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Mot de passe mis à jour avec succès'
+    });
+
+  } catch (error) {
+    console.error('Erreur changement mot de passe:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur'
     });
   }
 };
@@ -272,8 +406,50 @@ const createAdmin = async (req, res) => {
   }
 };
 
+const debugAdmin = async (req, res) => {
+  try {
+    const { email } = req.body;
+    const targetEmail = email || 'admin@es-parfumerie.com';
+    
+    const user = await findUserByEmail(targetEmail);
+    
+    if (!user) {
+      return res.json({
+        exists: false,
+        message: 'Utilisateur non trouvé'
+      });
+    }
+    
+    const canAccessAdmin = user.role === 'admin' && user.is_active === true;
+    
+    res.json({
+      exists: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        is_active: user.is_active,
+        created_at: user.created_at
+      },
+      canAccessAdmin: canAccessAdmin,
+      message: canAccessAdmin ? 'Peut accéder au panel admin' : 'Ne peut pas accéder au panel admin'
+    });
+    
+  } catch (error) {
+    console.error('Erreur débogage:', error);
+    res.status(500).json({
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   register,
   login,
-  createAdmin
+  logout,
+  getProfile,
+  updateProfile,
+  changePassword,
+  createAdmin,
+  debugAdmin
 };
