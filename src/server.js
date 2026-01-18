@@ -6,6 +6,77 @@ const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
+
+
+
+
+
+
+
+// Route d'urgence pour créer un admin
+app.post('/api/emergency-admin', async (req, res) => {
+  try {
+    const { Pool } = require('pg');
+    const bcrypt = require('bcryptjs');
+    
+    const pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false }
+    });
+    
+    const email = 'admin@es-parfumerie.com';
+    const password = 'Admin123!';
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    // Créer ou mettre à jour l'admin
+    const result = await pool.query(
+      `INSERT INTO users (name, email, password, role, is_active, email_verified) 
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (email) DO UPDATE 
+       SET password = $3, role = $4, updated_at = CURRENT_TIMESTAMP
+       RETURNING id, name, email, role`,
+      ['Administrateur ES', email, hashedPassword, 'admin', true, true]
+    );
+    
+    await pool.end();
+    
+    res.json({
+      success: true,
+      message: 'Admin créé/mis à jour avec succès',
+      credentials: {
+        email: email,
+        password: password
+      },
+      user: result.rows[0]
+    });
+    
+  } catch (error) {
+    console.error('Erreur emergency admin:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // Import des routes
 const authRoutes = require('./routes/auth');
 const productRoutes = require('./routes/products');
